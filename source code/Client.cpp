@@ -1,13 +1,13 @@
 #define _WIN32_WINNT 0x0600
 #include <iostream>
 #include <string>
-#include <vector>
 #include <iomanip>
 #include <thread>
 #include <atomic>
 #include <limits>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <mutex>
 
 #pragma comment(lib, "ws2_32.lib")
 using namespace std;
@@ -17,6 +17,11 @@ using namespace std;
 atomic<bool> globalConnected(false);    // Status koneksi ke server (thread-safe)
 atomic<bool> programRunning(true);      // Status apakah program masih berjalan
 string serverIPGlobal = "";             // Menyimpan IP server yang dituju
+
+double safeStod(const string& s) {
+    if (s.empty()) return 0.0;
+    try { return stod(s); } catch (...) { return 0.0; }
+}
 
 // ==========================================
 // 2. FUNGSI VALIDASI INPUT
@@ -83,18 +88,17 @@ class NetworkManager {
 private:
     SOCKET sock; char buffer[4096];
     string ip;
+    mutex netMutex;
 public:
-    //Constructor: Inisialisasi library Winsock Windows
     NetworkManager() : sock(INVALID_SOCKET) { 
         WSADATA wsaData; WSAStartup(MAKEWORD(2, 2), &wsaData);
     }
-    //Destructor: Menutup socket dan membersihkan Winsock
     ~NetworkManager() { if(sock != INVALID_SOCKET) closesocket(sock); WSACleanup(); }
-    
+
     void setIP(string ipTarget) { ip = ipTarget; }
 
-    // Fungsi untuk membuat koneksi TCP ke Server (Port 8888)
     bool connectToServer() {
+        lock_guard<mutex> lock(netMutex);
         if (sock != INVALID_SOCKET) closesocket(sock);
         sock = socket(AF_INET, SOCK_STREAM, 0);
         struct sockaddr_in serv_addr; serv_addr.sin_family = AF_INET; serv_addr.sin_port = htons(8888);
@@ -107,8 +111,8 @@ public:
         return true;
     }
 
-    // Fungsi untuk mengirim request JSON ke server dan menerima respons balik
     string sendRequest(string req) {
+        lock_guard<mutex> lock(netMutex);
         if (!globalConnected) return "{\"status\":\"fail\",\"message\":\"Disconnected\"}";
         if (send(sock, req.c_str(), req.length(), 0) == SOCKET_ERROR) { globalConnected = false; return "{\"status\":\"fail\"}"; }
         memset(buffer, 0, 4096);
@@ -123,33 +127,27 @@ public:
 void connectionCheckerWorker(NetworkManager* net) {
     bool previouslyConnected = true;
     while (programRunning) {
-        this_thread::sleep_for(chrono::seconds(2)); // Cek setiap 2 detik
+        this_thread::sleep_for(chrono::seconds(2));
         if (!programRunning) break;
 
         if (!globalConnected) {
-            // Mencoba menghubungkan kembali (Reconnecting)
             if (net->connectToServer()) {
                 if (!previouslyConnected) {
                     cout << "\n\n==================================================";
-                    cout << "\n[NOTICE] Berhasil terhubung kembali ke server!";
+                    cout << "\n[INFO] Berhasil terhubung kembali ke server!";
                     cout << "\n==================================================\n> ";
                     previouslyConnected = true;
                 }
             } else { previouslyConnected = false; }
         } else {
-            // Ping server untuk memastikan server masih aktif
-            SOCKET checkSock = socket(AF_INET, SOCK_STREAM, 0);
-            struct sockaddr_in serv_addr; serv_addr.sin_family = AF_INET; serv_addr.sin_port = htons(8888);
-            inet_pton(AF_INET, serverIPGlobal.c_str(), &serv_addr.sin_addr);
-            
-            if (connect(checkSock, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
+            string res = net->sendRequest("{\"action\":\"ping\"}");
+            if (getJsonValue(res, "status") != "success") {
                 globalConnected = false;
                 previouslyConnected = false;
                 cout << "\n\n==================================================";
                 cout << "\n[NOTICE] KONEKSI DENGAN SERVER TERPUTUS!";
                 cout << "\n==================================================\n> ";
             }
-            closesocket(checkSock);
         }
     }
 }
@@ -174,17 +172,17 @@ public:
         return true;
     }
 
-    // Menampilkan data logistik dari server ke dalam bentuk tabel rapi
+    // Menampilkan data logistik dari server ke dalam bentuk tabel
     void tampilkanTabel(string res) {
         string tkRes = net->sendRequest("{\"action\":\"get_tarif\"}");
-        double tKg = stod(getJsonValue(tkRes, "tarif_kg")), tM3 = stod(getJsonValue(tkRes, "tarif_m3"));
+        double tKg = safeStod(getJsonValue(tkRes, "tarif_kg")), tM3 = safeStod(getJsonValue(tkRes, "tarif_m3"));
         cout << "\n=========================================== DATA LOGISTIK ===========================================\n";
         cout << setw(5) << "ID" << " | " << setw(15) << left << "Nama Barang" << " | " << setw(15) << left << "Pengirim" << " | " << "Berat" << " | " << "Vol" << " | " << "Total Tarif\n";
         cout << "-----------------------------------------------------------------------------------------------------\n";
         string dataArr = getJsonValue(res, "data"); size_t pos = 0; int hitung = 0;
         while ((pos = dataArr.find("{\"id\":", pos)) != string::npos) {
             size_t endPos = dataArr.find("}", pos); string item = dataArr.substr(pos, endPos - pos + 1);
-            double b = stod(getJsonValue(item, "berat")), v = stod(getJsonValue(item, "volume"));
+            double b = safeStod(getJsonValue(item, "berat")), v = safeStod(getJsonValue(item, "volume"));
             cout << setw(5) << right << getJsonValue(item, "id") << " | " << setw(15) << left << getJsonValue(item, "nama") << " | " << setw(15) << left << getJsonValue(item, "pengirim") << " | " << setw(5) << b << " | " << setw(3) << v << " | Rp " << fixed << setprecision(0) << (b * tKg) + (v * tM3) << "\n";
             pos = endPos; hitung++;
         }
@@ -205,8 +203,8 @@ public:
             if (tPil == 1) {
                 string tkRes = net->sendRequest("{\"action\":\"get_tarif\"}");
                 cout << "\n=== TARIF LOGISTIK SAAT INI ===\n";
-                cout << "Tarif per Kg : Rp " << fixed << setprecision(0) << stod(getJsonValue(tkRes, "tarif_kg")) << "\n";
-                cout << "Tarif per m3 : Rp " << fixed << setprecision(0) << stod(getJsonValue(tkRes, "tarif_m3")) << "\n";
+                cout << "Tarif per Kg : Rp " << fixed << setprecision(0) << safeStod(getJsonValue(tkRes, "tarif_kg")) << "\n";
+                cout << "Tarif per m3 : Rp " << fixed << setprecision(0) << safeStod(getJsonValue(tkRes, "tarif_m3")) << "\n";
                 cout << "===============================\n";
             } else if (tPil == 2) {
                 double tk, tm; 
