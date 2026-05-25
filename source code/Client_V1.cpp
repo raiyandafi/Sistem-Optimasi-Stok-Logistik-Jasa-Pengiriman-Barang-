@@ -12,10 +12,15 @@
 #pragma comment(lib, "ws2_32.lib")
 using namespace std;
 
-atomic<bool> globalConnected(false);
-atomic<bool> programRunning(true);
-string serverIPGlobal = "";
+// ==========================================
+// 1. VARIABEL GLOBAL & KONTROL THREAD
+atomic<bool> globalConnected(false);    // Status koneksi ke server (thread-safe)
+atomic<bool> programRunning(true);      // Status apakah program masih berjalan
+string serverIPGlobal = "";             // Menyimpan IP server yang dituju
 
+// ==========================================
+// 2. FUNGSI VALIDASI INPUT
+// Mengamankan input integer dari kesalahan tipe data
 int getSafeInt() {
     int val;
     while (!(cin >> val)) {
@@ -25,7 +30,7 @@ int getSafeInt() {
     }
     return val;
 }
-
+// Mengamankan input double/desimal dari kesalahan tipe data
 double getSafeDouble() {
     double val;
     while (!(cin >> val)) {
@@ -36,6 +41,9 @@ double getSafeDouble() {
     return val;
 }
 
+// ==========================================
+// 3. FUNGSI PARSING JSON MANUAL
+// Mengekstrak nilai (value) berdasarkan kunci (key) dari string berformat JSON
 string getJsonValue(string json, string key) {
     size_t pos = json.find("\"" + key + "\""); 
     if (pos == string::npos) return "";
@@ -55,11 +63,13 @@ string getJsonValue(string json, string key) {
         }
         return json.substr(start, end - start);
     }
+    // Jika value berupa String ""
     if (json[start] == '"') {
         size_t end = json.find("\"", start + 1);
         if (end == string::npos) return "";
         return json.substr(start + 1, end - start - 1);
     }
+    // Jika value berupa angka atau boolean
     size_t end = json.find_first_of(",}", start);
     if (end == string::npos) end = json.length();
     string val = json.substr(start, end - start);
@@ -67,18 +77,23 @@ string getJsonValue(string json, string key) {
     return val;
 }
 
+// ==========================================
+// 4. WINSOCK SOCKET (Socket Programming)
 class NetworkManager {
 private:
     SOCKET sock; char buffer[4096];
     string ip;
 public:
+    //Constructor: Inisialisasi library Winsock Windows
     NetworkManager() : sock(INVALID_SOCKET) { 
         WSADATA wsaData; WSAStartup(MAKEWORD(2, 2), &wsaData);
     }
+    //Destructor: Menutup socket dan membersihkan Winsock
     ~NetworkManager() { if(sock != INVALID_SOCKET) closesocket(sock); WSACleanup(); }
     
     void setIP(string ipTarget) { ip = ipTarget; }
 
+    // Fungsi untuk membuat koneksi TCP ke Server (Port 8888)
     bool connectToServer() {
         if (sock != INVALID_SOCKET) closesocket(sock);
         sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -92,6 +107,7 @@ public:
         return true;
     }
 
+    // Fungsi untuk mengirim request JSON ke server dan menerima respons balik
     string sendRequest(string req) {
         if (!globalConnected) return "{\"status\":\"fail\",\"message\":\"Disconnected\"}";
         if (send(sock, req.c_str(), req.length(), 0) == SOCKET_ERROR) { globalConnected = false; return "{\"status\":\"fail\"}"; }
@@ -101,13 +117,17 @@ public:
     }
 };
 
+// ==========================================
+// 5. THREAD PENGECEK KONEKSI
+//Berjalan di latar belakang untuk auto-reconnect jika koneksi server terputus
 void connectionCheckerWorker(NetworkManager* net) {
     bool previouslyConnected = true;
     while (programRunning) {
-        this_thread::sleep_for(chrono::seconds(2));
+        this_thread::sleep_for(chrono::seconds(2)); // Cek setiap 2 detik
         if (!programRunning) break;
 
         if (!globalConnected) {
+            // Mencoba menghubungkan kembali (Reconnecting)
             if (net->connectToServer()) {
                 if (!previouslyConnected) {
                     cout << "\n\n==================================================";
@@ -117,6 +137,7 @@ void connectionCheckerWorker(NetworkManager* net) {
                 }
             } else { previouslyConnected = false; }
         } else {
+            // Ping server untuk memastikan server masih aktif
             SOCKET checkSock = socket(AF_INET, SOCK_STREAM, 0);
             struct sockaddr_in serv_addr; serv_addr.sin_family = AF_INET; serv_addr.sin_port = htons(8888);
             inet_pton(AF_INET, serverIPGlobal.c_str(), &serv_addr.sin_addr);
@@ -133,13 +154,15 @@ void connectionCheckerWorker(NetworkManager* net) {
     }
 }
 
+// ==========================================
+// 6. BASE CLASS MENU UTAMA
 class AppMenu {
 protected:
     NetworkManager* net; string role;
 public:
     AppMenu(NetworkManager* n, string r) : net(n), role(r) {}
     virtual ~AppMenu() {}
-    virtual void tampilkanMenu() = 0;
+    virtual void tampilkanMenu() = 0; // Pure virtual function
 
     bool checkConnectionState() {
         if (!globalConnected) {
@@ -151,6 +174,7 @@ public:
         return true;
     }
 
+    // Menampilkan data logistik dari server ke dalam bentuk tabel rapi
     void tampilkanTabel(string res) {
         string tkRes = net->sendRequest("{\"action\":\"get_tarif\"}");
         double tKg = stod(getJsonValue(tkRes, "tarif_kg")), tM3 = stod(getJsonValue(tkRes, "tarif_m3"));
@@ -168,8 +192,10 @@ public:
         cout << "====================================================================================================\n";
     }
 
+    // Fungsi Lihat data
     void lihatData() { if(!checkConnectionState()) return; string res = net->sendRequest("{\"action\":\"view\"}"); tampilkanTabel(res); }
 
+    // Fungsi Manajemen Tarif
     void manajemenTarifPengiriman() {
         if(!checkConnectionState()) return;
         int tPil;
@@ -192,6 +218,7 @@ public:
         } while (tPil != 0);
     }
 
+    // Fungsi Tambah Barang
     void tambahBarang() {
         if(!checkConnectionState()) return;
         string nama, pengirim; double berat, vol;
@@ -216,6 +243,7 @@ public:
         } else { cout << "-> Input barang dibatalkan.\n"; }
     }
 
+    // Fungsi Hapus Barang
     void hapusBarang() {
         if(!checkConnectionState()) return;
         cout << "\n-- OUTPUT / HAPUS BARANG --\n1. Berdasarkan ID\n2. Berdasarkan Nama\n3. Berdasarkan Pengirim\n0. Kembali ke Menu\nPilih Kriteria Hapus: ";
@@ -246,6 +274,7 @@ public:
         } else { cout << "-> Penghapusan dibatalkan.\n"; }
     }
 
+    // Fungsi Cari Data
     void cariData() {
         if(!checkConnectionState()) return;
         cout << "\n-- MENU PENCARIAN DATA --\n1. Berdasarkan ID Barang\n2. Berdasarkan Nama Barang\n3. Berdasarkan Nama Pengirim\n0. Kembali ke Menu\nPilih: ";
@@ -258,6 +287,7 @@ public:
         tampilkanTabel(net->sendRequest("{\"action\":\"search\",\"by\":\"" + by + "\",\"query\":\"" + query + "\"}"));
     }
 
+    // Fungsi Sortir Data
     void sortirData() {
         if(!checkConnectionState()) return;
         cout << "\n-- MENU SORTIR DATA --\n1. Berdasarkan ID Barang\n2. Berdasarkan Nama Barang\n3. Berdasarkan Nama Pengirim\n4. Berdasarkan Berat (Kg)\n5. Berdasarkan Volume (m3)\n0. Kembali ke Menu\nPilih: ";
@@ -274,6 +304,9 @@ public:
     }
 };
 
+// ==========================================
+// 7. DERIVED CLASS (POLIMORFISME ROLE USER)
+// Menu untuk Admin
 class AdminMenu : public AppMenu {
 public:
     AdminMenu(NetworkManager* n, string r) : AppMenu(n, r) {}
@@ -318,6 +351,7 @@ public:
     }
 };
 
+// Menu untuk Manajer
 class ManagerMenu : public AppMenu {
 public:
     ManagerMenu(NetworkManager* n, string r) : AppMenu(n, r) {}
@@ -338,6 +372,7 @@ public:
     }
 };
 
+// Menu untuk Staff
 class StaffMenu : public AppMenu {
 public:
     StaffMenu(NetworkManager* n, string r) : AppMenu(n, r) {}
@@ -358,11 +393,13 @@ public:
     }
 };
 
+// ==========================================
+// 8. FUNGSI UTAMA
 int main() {
     NetworkManager net;
     bool initialConnection = false;
-
-    // LOOPING KONEKSI AWAL: Akan terus meminta IP jika gagal, tanpa masuk ke loop Auto-Reconnect
+    
+    //1. Meminta IP Server dan mencoba terhubung pertama kali
     while (!initialConnection && programRunning) {
         cout << "Masukkan IP Server (ketik 'exit' untuk batal): "; 
         cin >> serverIPGlobal;
@@ -380,10 +417,11 @@ int main() {
         }
     }
 
-    // Hanya menjalankan background checker JIKA koneksi awal sudah berhasil
+    //2. Menjalankan Background Thread Pengecek Koneksi secara independen
     thread bgChecker(connectionCheckerWorker, &net);
     bgChecker.detach();
 
+    //3. Loop Menu Utama
     while (programRunning) {
         cout << "\n--- MAIN MENU LOGISTIK --- \n1. Login Sistem\n2. Exit Program\nPilih: ";
         int mPil = getSafeInt();
@@ -399,6 +437,7 @@ int main() {
         cout << "\n--- LOGIN --- \nUsername: "; cin >> user; cout << "Password: "; cin >> pass;
         string res = net.sendRequest("{\"action\":\"login\",\"username\":\"" + user + "\",\"password\":\"" + pass + "\"}");
 
+        //Jika Autentikasi berhasil, maka akan dibuat objek menu yang sesuai dengan role user (Polimorfisme)
         if (getJsonValue(res, "status") == "success") {
             string role = getJsonValue(res, "role");
             cout << "\nBerhasil login sebagai: " << role << "\n";
@@ -406,8 +445,8 @@ int main() {
             if (role == "Admin") menu = new AdminMenu(&net, role);
             else if (role == "Manajer") menu = new ManagerMenu(&net, role);
             else menu = new StaffMenu(&net, role);
-            menu->tampilkanMenu();
-            delete menu;
+            menu->tampilkanMenu();        // Menampilkan menu spesifik role
+            delete menu;                  // Membersihkan memory setelah logout
         } else if (globalConnected) {
             cout << "-> [INFO] " << getJsonValue(res, "message") << "\n";
         }
