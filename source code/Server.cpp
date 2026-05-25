@@ -14,6 +14,16 @@
 #pragma comment(lib, "ws2_32.lib")
 using namespace std;
 
+double safeStod(const string& s) {
+    if (s.empty()) return 0.0;
+    try { return stod(s); } catch (...) { return 0.0; }
+}
+
+int safeStoi(const string& s) {
+    if (s.empty()) return 0;
+    try { return stoi(s); } catch (...) { return 0; }
+}
+
 // =========================================================================
 // 1. KOMPONEN KEAMANAN MULTITHREADING
 // Mutex mencegah 'race condition' (data rusak/tabrakan) saat beberapa client  
@@ -208,8 +218,8 @@ private:
                     condition = asc ? (db[j]->getVolume() > db[j+1]->getVolume()) 
                                     : (db[j]->getVolume() < db[j+1]->getVolume());
                 } else {
-                    condition = asc ? (stoi(db[j]->getId()) > stoi(db[j+1]->getId())) 
-                                    : (stoi(db[j]->getId()) < stoi(db[j+1]->getId()));
+                    condition = asc ? (safeStoi(db[j]->getId()) > safeStoi(db[j+1]->getId())) 
+                                    : (safeStoi(db[j]->getId()) < safeStoi(db[j+1]->getId()));
                 }
                 
                 if (condition) {
@@ -234,7 +244,7 @@ public:
             while (getline(file, line)) {
                 if (line.empty()) continue;
                 db.push_back(new BarangLogistik(getJsonValue(line, "id"), getJsonValue(line, "nama"), getJsonValue(line, "pengirim"),
-                                                stod(getJsonValue(line, "berat")), stod(getJsonValue(line, "volume"))));
+                                                safeStod(getJsonValue(line, "berat")), safeStod(getJsonValue(line, "volume"))));
             }
             file.close();
         }
@@ -243,7 +253,7 @@ public:
         lock_guard<recursive_mutex> lock(dbMutex);
         ifstream file(FILE_TARIF); string line;
         if (file.is_open() && getline(file, line) && !line.empty()) {
-            tarifKg = stod(getJsonValue(line, "tarif_kg")); tarifM3 = stod(getJsonValue(line, "tarif_m3"));
+            tarifKg = safeStod(getJsonValue(line, "tarif_kg")); tarifM3 = safeStod(getJsonValue(line, "tarif_m3"));
         }
         file.close();
     }
@@ -259,7 +269,7 @@ public:
     }
     string generateIDInternal() {
         int maxId = 0;
-        for (const auto& b : db) { if (stoi(b->getId()) > maxId) maxId = stoi(b->getId()); }
+        for (const auto& b : db) { if (safeStoi(b->getId()) > maxId) maxId = safeStoi(b->getId()); }
         stringstream ss; ss << setfill('0') << setw(3) << (maxId + 1); return ss.str();
     }
     string getNextID() {
@@ -398,11 +408,11 @@ string prosesPermintaan(string req, string& role, string& username) {
     if (action == "get_next_id") return "{\"status\":\"success\",\"next_id\":\"" + dbMgr.getNextID() + "\"}";
 
     if (action == "set_tarif" && (role == "Admin" || role == "Manajer")) {
-        dbMgr.simpanTarif(stod(getJsonValue(req, "tarif_kg")), stod(getJsonValue(req, "tarif_m3")));
+        dbMgr.simpanTarif(safeStod(getJsonValue(req, "tarif_kg")), safeStod(getJsonValue(req, "tarif_m3")));
         return "{\"status\":\"success\",\"message\":\"Tarif Baru Berhasil Disimpan!\"}";
     }
     if (action == "add" && (role == "Admin" || role == "Manajer" || role == "Inbound")) {
-        dbMgr.tambahBarang(getJsonValue(req, "nama"), getJsonValue(req, "pengirim"), stod(getJsonValue(req, "berat")), stod(getJsonValue(req, "volume")));
+        dbMgr.tambahBarang(getJsonValue(req, "nama"), getJsonValue(req, "pengirim"), safeStod(getJsonValue(req, "berat")), safeStod(getJsonValue(req, "volume")));
         return "{\"status\":\"success\",\"message\":\"Barang berhasil masuk database!\"}";
     }
     if (action == "delete" && (role == "Admin" || role == "Manajer" || role == "Outbound")) {
