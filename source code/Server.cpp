@@ -14,9 +14,17 @@
 #pragma comment(lib, "ws2_32.lib")
 using namespace std;
 
+// =========================================================================
+// 1. KOMPONEN KEAMANAN MULTITHREADING
+// Mutex mencegah 'race condition' (data rusak/tabrakan) saat beberapa client  
+// mengakses atau mengubah database dan data user di waktu yang bersamaan
 recursive_mutex dbMutex;
 recursive_mutex userMutex;
 
+// =========================================================================
+// 2. KOMPONEN PARSER JSON MANUAL
+// Fungsi untuk mengekstrak nilai (value) dari string JSON berdasarkan 
+// kunci (key) tertentu secara manual tanpa menggunakan library pihak ketiga
 string getJsonValue(string json, string key) {
     size_t pos = json.find("\"" + key + "\""); 
     if (pos == string::npos) return "";
@@ -48,6 +56,10 @@ string getJsonValue(string json, string key) {
     return val;
 }
 
+// =========================================================================
+// 3. KOMPONEN MODEL DATA
+
+// Base Class abstrak untuk mendefinisikan struktur dasar cetakan objek Barang.
 class Barang {
 protected: 
     string id; string nama; string pengirim;
@@ -62,6 +74,7 @@ public:
     virtual string toJson() const = 0;
 };
 
+// Derived Class untuk implementasi riil data barang logistik.
 class BarangLogistik : public Barang {
 private:
     double berat; double volume;
@@ -75,11 +88,15 @@ public:
     }
 };
 
+// =========================================================================
+// 4. KOMPONEN MANAJEMEN USER
+// Kelas ini bertanggung jawab untuk memuat akun dari file teks, memvalidasi login, 
+// serta mencatat siapa saja user yang sedang aktif/online.
 class UserManager {
 private:
     struct UserData { string user, pass, role; };
-    vector<UserData> users;
-    vector<string> activeUsers;
+    vector<UserData> users;        // Menyimpan daftar user terdaftar di RAM
+    vector<string> activeUsers;    // Menjaga sesi user online (mencegah double-login)
     const string FILE_USER = "LoginInfo.txt";
 
     void simpanUserInternal() {
@@ -90,6 +107,8 @@ private:
 
 public:
     UserManager() { muatUser(); }
+
+    // Membaca database user dari file teks
     void muatUser() {
         lock_guard<recursive_mutex> lock(userMutex);
         users.clear(); ifstream file(FILE_USER); string u, p, r;
@@ -98,6 +117,7 @@ public:
             file.close();
         }
     }
+    // Verifikasi kecocokan username, password, dan mengambil role-nya
     string cekLogin(string u, string p) {
         lock_guard<recursive_mutex> lock(userMutex);
         muatUser();
@@ -145,6 +165,8 @@ public:
     }
 };
 
+// =========================================================================
+// 5. KOMPONEN UTAMA DATABASE & ALGORITMA
 class DatabaseManager {
 private:
     vector<Barang*> db;
@@ -158,6 +180,7 @@ private:
         file.close();
     }
 
+    // Agar pencarian menjadi Case-Insensitive
     string toLowerManual(string s) {
         for (char &c : s) {
             if (c >= 'A' && c <= 'Z') c = c + 32;
@@ -165,6 +188,7 @@ private:
         return s;
     }
 
+    // BUBBLE SORT
     void bubbleSortInternal(string by, bool asc) {
         int n = db.size();
         for (int i = 0; i < n - 1; i++) {
@@ -265,6 +289,8 @@ public:
         
         simpanDBInternal();
     }
+
+    // BINARY SEARCH
     string searchData(string by, string query) {
         lock_guard<recursive_mutex> lock(dbMutex);
         muatDB(); 
@@ -344,11 +370,16 @@ public:
 UserManager userMgr;
 DatabaseManager dbMgr;
 
+// =========================================================================
+// 6. KOMPONEN INTERPRETER & ROUTER PERMINTAAN
+// Membaca string permintaan JSON dari client, memvalidasi 
+// Hak Akses (Role), lalu mengarahkan ke fungsi yang sesuai
 string prosesPermintaan(string req, string& role, string& username) {
     string action = getJsonValue(req, "action");
 
     if (action == "ping") return "{\"status\":\"success\"}";
 
+    // Handler Fitur Login & Autentikasi Sesi
     if (action == "login") {
         string u = getJsonValue(req, "username"), p = getJsonValue(req, "password");
         if (userMgr.isUserOnline(u)) return "{\"status\":\"fail\",\"message\":\"user ini sedang login di perangkat lain\"}";
@@ -360,7 +391,8 @@ string prosesPermintaan(string req, string& role, string& username) {
         }
         return "{\"status\":\"fail\",\"message\":\"Username/Password Salah\"}";
     }
-    
+
+    // Handler Operasi Data Barang Logistik (Dibatasi berdasarkan Role User)
     if (action == "view") return dbMgr.viewAllJson();
     if (action == "get_tarif") return dbMgr.getTarifJson();
     if (action == "get_next_id") return "{\"status\":\"success\",\"next_id\":\"" + dbMgr.getNextID() + "\"}";
@@ -385,6 +417,7 @@ string prosesPermintaan(string req, string& role, string& username) {
         return dbMgr.searchData(getJsonValue(req, "by"), getJsonValue(req, "query"));
     }
 
+    // Handler Khusus Admin
     if (action == "add_user" && role == "Admin") {
         if (userMgr.tambahUser(getJsonValue(req, "u"), getJsonValue(req, "p"), getJsonValue(req, "r")))
             return "{\"status\":\"success\",\"message\":\"User berhasil ditambahkan!\"}";
@@ -401,15 +434,20 @@ string prosesPermintaan(string req, string& role, string& username) {
     return "{\"status\":\"fail\",\"message\":\"Akses Ditolak!\"}";
 }
 
+// =========================================================================
+// 7. KOMPONEN MULTITHREAD WORKER CLIENT HANDLER
+// Fungsi untuk menangani satu client tertentu secara asinkronus. 
+
+// Melakukan siklus terima data (recv) dan kirim data (send) hingga client logout.
 void handleClient(SOCKET clientSocket) {
     string role = "Guest", username = "Unknown";
     char buffer[4096] = {0};
     while (true) {
         memset(buffer, 0, 4096);
-        int valread = recv(clientSocket, buffer, 4096, 0);
-        if (valread <= 0) break; 
+        int valread = recv(clientSocket, buffer, 4096, 0);        // Blocking: Menunggu data masuk
+        if (valread <= 0) break;                                 // Jika koneksi putus atau error, keluar dari siklus
         string res = prosesPermintaan(string(buffer), role, username);
-        send(clientSocket, res.c_str(), res.length(), 0);
+        send(clientSocket, res.c_str(), res.length(), 0);        // Mengirim respon kembali ke client
     }
     if (username != "Unknown") {
         cout << "[LOG DISCONNECT] User '" << username << "' terputus.\n";
@@ -418,18 +456,29 @@ void handleClient(SOCKET clientSocket) {
     closesocket(clientSocket);
 }
 
+// =========================================================================
+// 8. FUNGSI UTAMA
 int main() {
+    // Inisialisasi Winsock Library
     WSADATA wsaData; WSAStartup(MAKEWORD(2, 2), &wsaData);
     SOCKET serverFd = socket(AF_INET, SOCK_STREAM, 0);
+
+    // Pengaturan alamat IP
     struct sockaddr_in addr; addr.sin_family = AF_INET; addr.sin_addr.s_addr = INADDR_ANY; addr.sin_port = htons(8888);
+
+    // Mendaftarkan alamat ke socket dan mendengarkan antrean masuk (Maksimal antrean 20 client)
     bind(serverFd, (struct sockaddr*)&addr, sizeof(addr)); listen(serverFd, 20);
     cout << "==========================\n";
     cout << "  SERVER SISTEM LOGISTIK \n";
     cout << "==========================\n";
+
+    // Server Loop: Menerima koneksi baru dan memisahkannya ke thread mandiri
     while (true) {
         int addrlen = sizeof(addr);
-        SOCKET newSocket = accept(serverFd, (struct sockaddr*)&addr, &addrlen);
+        SOCKET newSocket = accept(serverFd, (struct sockaddr*)&addr, &addrlen);    // Blocking: Menunggu client terhubung
         if (newSocket == INVALID_SOCKET) continue;
+
+        // Membuat Thread baru (Multithreading) untuk melayani client tersebut di background
         thread t(handleClient, newSocket); t.detach();
     }
     closesocket(serverFd); WSACleanup(); return 0;
