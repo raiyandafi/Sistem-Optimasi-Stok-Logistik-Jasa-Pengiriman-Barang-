@@ -413,7 +413,7 @@ string prosesPermintaan(string req, string& role, string& username) {
         dbMgr.sortData(getJsonValue(req, "by"), getJsonValue(req, "order"));
         return "{\"status\":\"success\",\"message\":\"Data berhasil disortir!\"}";
     }
-    if (action == "search" && (role == "Admin" || role == "Manajer")) {
+    if (action == "search" && role != "Guest") {
         return dbMgr.searchData(getJsonValue(req, "by"), getJsonValue(req, "query"));
     }
 
